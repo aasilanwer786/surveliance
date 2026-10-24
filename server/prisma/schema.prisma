@@ -1,0 +1,569 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  phone             String?
+  passwordHash      String
+  name              String
+  role              String // SUPER_ADMIN | ADMIN | SECURITY | RESIDENT | GUARD
+  status            String    @default("ACTIVE") // ACTIVE | DISABLED
+  failedLoginCount  Int       @default(0)
+  lockedUntil       DateTime?
+  lastLoginAt       DateTime?
+  mustChangePassword Boolean   @default(false)
+  mfaEnabled        Boolean   @default(false)
+  mfaSecret         String?
+  avatarPath        String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  createdBy         String?
+  updatedBy         String?
+  deletedAt         DateTime?
+
+  refreshTokens     RefreshToken[]
+  residents         Resident[]
+  createdInvitations VisitorInvitation[]
+  guardProfile      SecurityGuardProfile?
+  auditLogs         AuditLog[]
+  notifications     Notification[]        @relation("UserNotifications")
+  approvalsMade     VisitorApproval[]
+  entriesRecorded   VisitorEntry[]
+  exitsRecorded     VisitorExit[]
+  alertsAcked       SecurityAlert[]       @relation("AlertAckedBy")
+  alertsResolved    SecurityAlert[]       @relation("AlertResolvedBy")
+  incidentsReported SecurityIncident[]    @relation("IncidentReportedBy")
+  incidentsClosed   SecurityIncident[]    @relation("IncidentClosedBy")
+  watchlistEntries  WatchlistEntry[]
+
+  @@index([role])
+  @@index([status])
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  userId    String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  ip        String?
+  userAgent String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Building {
+  id        String    @id @default(cuid())
+  name      String
+  code      String    @unique
+  address   String?
+  status    String    @default("ACTIVE")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  createdBy String?
+  updatedBy String?
+  deletedAt DateTime?
+
+  blocks Block[]
+  gates  Gate[]
+}
+
+model Block {
+  id         String   @id @default(cuid())
+  name       String
+  code       String
+  buildingId String
+  status     String   @default("ACTIVE")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  deletedAt  DateTime?
+
+  building  Building   @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  floors    Floor[]
+  apartments Apartment[]
+
+  @@unique([buildingId, code])
+  @@index([buildingId])
+}
+
+model Floor {
+  id        String   @id @default(cuid())
+  number    Int
+  label     String?
+  blockId   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+
+  block      Block       @relation(fields: [blockId], references: [id], onDelete: Cascade)
+  apartments Apartment[]
+
+  @@unique([blockId, number])
+  @@index([blockId])
+}
+
+model Apartment {
+  id        String   @id @default(cuid())
+  flatNumber String
+  blockId   String
+  floorId   String
+  bedroomCount Int?
+  area      String?
+  status    String   @default("ACTIVE") // ACTIVE | INACTIVE
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?
+  updatedBy String?
+  deletedAt DateTime?
+
+  block   Block     @relation(fields: [blockId], references: [id], onDelete: Cascade)
+  floor   Floor     @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  residents Resident[]
+  invitations VisitorInvitation[]
+
+  @@unique([blockId, flatNumber])
+  @@index([blockId])
+  @@index([floorId])
+}
+
+model Resident {
+  id          String   @id @default(cuid())
+  userId      String
+  apartmentId String
+  relation    String   @default("OWNER") // OWNER | TENANT | FAMILY
+  isPrimary   Boolean  @default(false)
+  status      String   @default("ACTIVE") // ACTIVE | INACTIVE
+  moveInDate  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   String?
+  updatedBy   String?
+  deletedAt   DateTime?
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  apartment   Apartment   @relation(fields: [apartmentId], references: [id], onDelete: Cascade)
+  invitations VisitorInvitation[]
+
+  @@unique([userId, apartmentId])
+  @@index([apartmentId])
+  @@index([userId])
+}
+
+model SecurityGuardProfile {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  employeeCode   String   @unique
+  assignedGateId String?
+  phone          String?
+  status         String   @default("ACTIVE")
+  shiftStart     String?
+  shiftEnd       String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  gate  Gate? @relation(fields: [assignedGateId], references: [id])
+
+  @@index([assignedGateId])
+}
+
+model Gate {
+  id        String   @id @default(cuid())
+  name      String
+  code      String   @unique
+  type      String   @default("MAIN") // MAIN | SECONDARY | SERVICE | PARKING | PEDESTRIAN
+  location  String?
+  buildingId String?
+  status    String   @default("ACTIVE") // ACTIVE | INACTIVE
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?
+  updatedBy String?
+  deletedAt DateTime?
+
+  building   Building?             @relation(fields: [buildingId], references: [id])
+  entries    VisitorEntry[]
+  exits      VisitorExit[]
+  alerts     SecurityAlert[]
+  incidents  SecurityIncident[]
+  cameras    Camera[]
+  accessPoints AccessPoint[]
+  guards     SecurityGuardProfile[]
+  detectorEvents DetectorEvent[]
+
+  @@index([buildingId])
+}
+
+model VisitorInvitation {
+  id            String    @id @default(cuid())
+  code          String    @unique
+  visitorName   String
+  visitorPhone  String?
+  visitorPhotoPath String?
+  purpose       String?
+  vehicleNumber String?
+  notes         String?
+
+  residentId    String
+  apartmentId   String
+  createdById   String
+
+  expectedAt    DateTime
+  arriveFrom    DateTime
+  arriveUntil   DateTime
+  expectedExitAt DateTime
+  durationMinutes Int
+  expiresAt     DateTime
+
+  maxUses       Int       @default(1)
+  usedCount     Int       @default(0)
+  status        String    @default("ACTIVE") // ACTIVE | CANCELLED | EXPIRED | EXHAUSTED | REJECTED
+  visitStatus   String    @default("EXPECTED") // EXPECTED | AWAITING_APPROVAL | APPROVED | DENIED | INSIDE | EXITED | BLOCKED
+  approvalPolicy String? // AUTO | RESIDENT | SECURITY | BOTH (null = system default)
+  allowedGateIds String? // csv of gate ids; null = any gate
+  overstayAlertedAt DateTime?
+
+  entryGateId   String?
+  exitGateId    String?
+  decidedAt     DateTime?
+  decidedById   String?
+  rejectReason  String?
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  createdBy     String?
+  updatedBy     String?
+  deletedAt     DateTime?
+
+  resident      Resident     @relation(fields: [residentId], references: [id])
+  apartment     Apartment    @relation(fields: [apartmentId], references: [id])
+  residentUser  User         @relation(fields: [createdById], references: [id])
+  approvals     VisitorApproval[]
+  entries       VisitorEntry[]
+  exits         VisitorExit[]
+  alerts        SecurityAlert[]
+
+  @@index([residentId])
+  @@index([apartmentId])
+  @@index([status, visitStatus])
+  @@index([expectedAt])
+}
+
+model VisitorApproval {
+  id            String   @id @default(cuid())
+  invitationId  String
+  type          String // RESIDENT | SECURITY
+  status        String   @default("PENDING") // PENDING | APPROVED | REJECTED
+  requestedAt   DateTime @default(now())
+  decidedAt     DateTime?
+  decidedById   String?
+  reason        String?
+
+  invitation VisitorInvitation @relation(fields: [invitationId], references: [id], onDelete: Cascade)
+  decidedBy  User?             @relation(fields: [decidedById], references: [id])
+
+  @@unique([invitationId, type])
+  @@index([status])
+}
+
+model VisitorEntry {
+  id            String   @id @default(cuid())
+  invitationId  String
+  gateId        String
+  guardId       String
+  photoPath     String?
+  vehicleNumber String?
+  deviceInfo    String?
+  source        String   @default("MANUAL") // QR | CODE | API
+  enteredAt     DateTime @default(now())
+
+  invitation VisitorInvitation @relation(fields: [invitationId], references: [id], onDelete: Cascade)
+  gate       Gate              @relation(fields: [gateId], references: [id])
+  guard      User              @relation(fields: [guardId], references: [id])
+
+  @@index([invitationId])
+  @@index([gateId])
+  @@index([enteredAt])
+}
+
+model VisitorExit {
+  id            String   @id @default(cuid())
+  invitationId  String
+  gateId        String
+  guardId       String
+  deviceInfo    String?
+  durationMinutes Int?
+  exitedAt      DateTime @default(now())
+
+  invitation VisitorInvitation @relation(fields: [invitationId], references: [id], onDelete: Cascade)
+  gate       Gate              @relation(fields: [gateId], references: [id])
+  guard      User              @relation(fields: [guardId], references: [id])
+
+  @@index([invitationId])
+  @@index([exitedAt])
+}
+
+model WatchlistEntry {
+  id          String   @id @default(cuid())
+  name        String?
+  phone       String?
+  vehicle     String?
+  reason      String
+  level       String   @default("WATCHLIST") // BLOCKED | WATCHLIST | RESTRICTED
+  status      String   @default("ACTIVE") // ACTIVE | INACTIVE
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   User     @relation(fields: [createdById], references: [id])
+
+  @@index([phone])
+  @@index([status, level])
+}
+
+model SecurityAlert {
+  id            String    @id @default(cuid())
+  code          String    @unique
+  type          String // UNAUTHORIZED_VISITOR | INVALID_CODE | EXPIRED_CODE | WATCHLIST_MATCH | UNKNOWN_PERSON | OVERSTAY | LOCKDOWN | DEVICE_OFFLINE | CUSTOM
+  priority      String    @default("HIGH") // LOW | MEDIUM | HIGH | CRITICAL | EMERGENCY
+  status        String    @default("NEW") // NEW | ACKNOWLEDGED | RESOLVED | CLOSED
+  title         String
+  description   String
+  gateId        String?
+  location      String?
+  subjectName   String?
+  subjectPhone  String?
+  photoPath     String?
+  invitationId  String?
+  detectorEventId String?
+  incidentId    String?
+  acknowledgedById String?
+  acknowledgedAt DateTime?
+  resolvedById  String?
+  resolvedAt    DateTime?
+  resolution    String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  gate      Gate?             @relation(fields: [gateId], references: [id])
+  invitation VisitorInvitation? @relation(fields: [invitationId], references: [id])
+  incident  SecurityIncident? @relation(fields: [incidentId], references: [id])
+  ackedBy   User?             @relation("AlertAckedBy", fields: [acknowledgedById], references: [id])
+  resolvedBy User?            @relation("AlertResolvedBy", fields: [resolvedById], references: [id])
+  detectorEvent DetectorEvent?
+
+  @@index([status, priority])
+  @@index([createdAt])
+  @@index([type])
+}
+
+model SecurityIncident {
+  id            String   @id @default(cuid())
+  code          String   @unique
+  type          String
+  priority      String   @default("HIGH")
+  status        String   @default("NEW") // NEW | ACKNOWLEDGED | INVESTIGATING | RESOLVED | CLOSED
+  title         String
+  description   String
+  location      String?
+  gateId        String?
+  subjectName   String?
+  subjectPhone  String?
+  photoPath     String?
+  actionsTaken  String?
+  resolution    String?
+  reportedById  String
+  assignedGuardId String?
+  closedById    String?
+  closedAt      DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  gate    Gate?    @relation(fields: [gateId], references: [id])
+  reportedBy User  @relation("IncidentReportedBy", fields: [reportedById], references: [id])
+  closedBy    User? @relation("IncidentClosedBy", fields: [closedById], references: [id])
+  alerts   SecurityAlert[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  type      String // VISITOR_APPROVAL_REQUEST | VISITOR_ENTRY | VISITOR_EXIT | VISITOR_CANCELLED | SECURITY_ALERT | LOCKDOWN | SYSTEM
+  title     String
+  body      String
+  priority  String    @default("LOW") // LOW | MEDIUM | HIGH | CRITICAL | EMERGENCY
+  data      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user      User                 @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
+  deliveries NotificationDelivery[]
+
+  @@index([userId, readAt])
+  @@index([createdAt])
+}
+
+model NotificationDelivery {
+  id             String   @id @default(cuid())
+  notificationId String
+  channel        String // IN_APP | PUSH | SMS | EMAIL | WHATSAPP
+  status         String   @default("QUEUED") // QUEUED | SENT | FAILED
+  attempts       Int      @default(0)
+  lastError      String?
+  updatedAt      DateTime @updatedAt
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([notificationId])
+  @@index([channel, status])
+}
+
+model VoiceAlertConfig {
+  id                    String   @id @default(cuid())
+  event                 String   @unique // VERIFY_OK | VERIFY_FAILED | UNAUTHORIZED | UNKNOWN_PERSON | EMERGENCY | LOCKDOWN | OVERSTAY
+  message               String
+  enabled               Boolean  @default(true)
+  priority              String   @default("HIGH")
+  voice                 String   @default("en-US")
+  volume                Float    @default(1.0)
+  repeatCount           Int      @default(1)
+  repeatIntervalSeconds Int      @default(3)
+  targetRoles           String   @default("GUARD,ADMIN,SECURITY")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+model Camera {
+  id              String    @id @default(cuid())
+  name            String
+  location        String?
+  protocol        String    @default("RTSP") // RTSP | ONVIF | HTTP | VENDOR_API
+  endpoint        String
+  username        String?
+  passwordEnc     String?
+  status          String    @default("OFFLINE") // ONLINE | OFFLINE | ERROR | UNKNOWN
+  area            String?
+  gateId          String?
+  integrationType String    @default("GENERIC")
+  lastHeartbeatAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  createdBy       String?
+  updatedBy       String?
+  deletedAt       DateTime?
+
+  gate           Gate?            @relation(fields: [gateId], references: [id])
+  detectorEvents DetectorEvent[]
+
+  @@index([gateId])
+  @@index([status])
+}
+
+model AccessPoint {
+  id              String   @id @default(cuid())
+  name            String
+  type            String   @default("GATE") // GATE | DOOR | TURNSTILE | BARRIER | RFID_READER | QR_SCANNER | NFC
+  endpoint        String?
+  protocol        String   @default("HTTP")
+  status          String   @default("UNKNOWN")
+  gateId          String?
+  deviceId        String?
+  lastHeartbeatAt DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  createdBy       String?
+  updatedBy       String?
+
+  gate Gate? @relation(fields: [gateId], references: [id])
+
+  @@index([gateId])
+}
+
+model Device {
+  id              String   @id @default(cuid())
+  name            String
+  type            String // SCANNER | DISPLAY | SPEAKER | SIREN | CONTROLLER
+  location        String?
+  endpoint        String?
+  status          String   @default("UNKNOWN")
+  lastHeartbeatAt DateTime?
+  meta            String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([type])
+  @@index([status])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  userRole  String?
+  action    String
+  entity    String?
+  entityId  String?
+  result    String   @default("SUCCESS") // SUCCESS | FAILURE
+  ip        String?
+  device    String?
+  metadata  String?
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([createdAt])
+  @@index([action])
+  @@index([userId])
+  @@index([entity, entityId])
+}
+
+model SystemSetting {
+  key       String   @id
+  value     String
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+}
+
+model EmergencyEvent {
+  id             String    @id @default(cuid())
+  type           String // LOCKDOWN_ACTIVATE | LOCKDOWN_RELEASE
+  reason         String?
+  notes          String?
+  activatedById  String
+  activatedAt    DateTime  @default(now())
+  releasedById   String?
+  releasedAt     DateTime?
+}
+
+model DetectorEvent {
+  id           String   @id @default(cuid())
+  source       String   @default("CCTV") // CCTV | AI | ACCESS_CONTROL | MANUAL
+  type         String // UNKNOWN_PERSON | PERSON_DETECTED | LOITERING | INTRUSION | CROWD | LICENSE_PLATE | RESTRICTED_AREA
+  area         String?
+  gateId       String?
+  cameraId     String?
+  confidence   Float?
+  payload      String?
+  status       String   @default("NEW") // NEW | PROCESSED | DISMISSED
+  alertId      String?  @unique
+  createdAt    DateTime @default(now())
+
+  gate   Gate?    @relation(fields: [gateId], references: [id])
+  camera Camera?  @relation(fields: [cameraId], references: [id])
+  alert  SecurityAlert? @relation(fields: [alertId], references: [id])
+
+  @@index([status, type])
+  @@index([createdAt])
+}
