@@ -35,12 +35,14 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
   app.decorate("authenticate", async (req: FastifyRequest) => {
     const token = extractToken(req);
     if (!token) throw unauthorized("Missing access token");
-    let payload: { sub: string };
+    let payload: { sub: string; purpose?: string };
     try {
-      payload = app.jwt.verify(token) as { sub: string };
+      payload = app.jwt.verify(token) as { sub: string; purpose?: string };
     } catch {
       throw unauthorized("Invalid or expired access token", "INVALID_TOKEN");
     }
+    // MFA challenge tokens are only valid at /api/auth/mfa/verify.
+    if (payload.purpose) throw unauthorized("Invalid access token", "INVALID_TOKEN");
     const user = await loadAuthUser(payload.sub);
     if (!user) throw unauthorized("Account is disabled or no longer exists", "ACCOUNT_DISABLED");
     const ctx: AuthContext = { user, permissions: permissionsForRole(user.role) };
@@ -51,7 +53,8 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
     const token = extractToken(req);
     if (!token) return;
     try {
-      const payload = app.jwt.verify(token) as { sub: string };
+      const payload = app.jwt.verify(token) as { sub: string; purpose?: string };
+      if (payload.purpose) return;
       const user = await loadAuthUser(payload.sub);
       if (user) req.auth = { user, permissions: permissionsForRole(user.role) };
     } catch {

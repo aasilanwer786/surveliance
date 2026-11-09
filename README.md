@@ -2,9 +2,9 @@
 
 Production-style residential apartment security platform: visitor invitations with QR codes, guard gate verification (fail secure), resident approvals, watchlist, alerts, incidents, lockdown, audit logging, and real-time dashboards.
 
-- **Backend** — Fastify 5 + TypeScript (ESM), Prisma 6 + SQLite, zod v4, JWT (access + rotating refresh), RBAC, OpenAPI at `/docs`, WebSocket realtime, background jobs (overstay sweeper, retention/anonymization).
+- **Backend** — Fastify 5 + TypeScript (ESM), Prisma 6 + PostgreSQL, zod v4, JWT (access + rotating refresh), RBAC, OpenAPI at `/docs`, WebSocket realtime, background jobs (overstay sweeper, retention/anonymization).
 - **Frontend** — React 19 + Vite 7 + TypeScript (strict), React Router 7, role-aware UI, live updates over WS, voice alerts via the Web Speech API, QR scanning with `html5-qrcode`.
-- **Tests** — Vitest: 8 files, 75 tests (unit + API integration against a seeded SQLite database).
+- **Tests** — Vitest: 13 files, 103 tests (unit + API integration against a seeded PostgreSQL database).
 
 ## Features
 
@@ -17,6 +17,7 @@ Production-style residential apartment security platform: visitor invitations wi
 | Security ops | Alerts (acknowledge/resolve), incidents (report/investigate/close), watchlist (BLOCKED/WATCHLIST/RESTRICTED), lockdown activate/release, reports (JSON + CSV), audit log |
 | Surveillance | CCTV/AI detector events create alerts + incidents automatically (`POST /api/integrations/detector-events`); the detecting camera is shown on each alert/incident with a snapshot viewer (`GET /api/cameras/:id/snapshot` — HTTP/MJPEG direct, RTSP decoded via `ffmpeg`) |
 | Admin | Users/roles, buildings/blocks/floors/apartments, gates & cameras (credentials encrypted at rest), system settings |
+| Account security | Password change; TOTP two-factor authentication with authenticator-app QR enrolment and one-time recovery codes; MFA challenge tokens are rejected by every access-token endpoint |
 | Notifications | In-app inbox, unread counts, delivery records; retention sweep with optional anonymization |
 
 ## Roles
@@ -26,11 +27,15 @@ Production-style residential apartment security platform: visitor invitations wi
 ## Quick start (local dev)
 
 ```bash
+# 0. PostgreSQL must be running and the database must exist:
+#    createdb -U postgres SB_db
+#    (or edit DATABASE_URL in server/.env)
+
 # 1. API (port 4000)
 cd server
 npm install
-cp .env.example .env          # defaults work for dev
-npx prisma db push
+cp .env.example .env          # defaults point at postgresql://postgres:Admin123@localhost:5432/SB_db
+npx prisma migrate dev        # apply migrations (creates all tables)
 npm run seed                  # demo data (destructive reset of demo rows)
 npm run dev
 
@@ -56,11 +61,36 @@ Password for all: `Secure@Demo123!`
 
 Seeded visitor codes (see `server/prisma/seed.ts`): `VIS-2026-GUEST1` (awaiting approval), `VIS-2026-INSID1` (already inside), plus approved/exited samples. Main gate code: `MAIN-1`. The public visitor pass page is `/invite/<CODE>` (no login).
 
+### Two-factor authentication (MFA)
+
+Any signed-in account can enable TOTP MFA from the **🛡 shield** button in the top bar
+(`/account/security`): scan the QR with an authenticator app, confirm a 6-digit code, and
+store the eight one-time recovery codes that are shown once.
+
+When MFA is enabled, `POST /api/auth/login` returns `{ mfaRequired: true, challengeToken }`
+instead of tokens. `POST /api/auth/mfa/verify` exchanges the challenge plus a TOTP or
+recovery code for access/refresh tokens. Challenge tokens carry `purpose: "mfa"` and are
+rejected by every authenticated endpoint. Disabling MFA requires the account password and a
+current code.
+
+If the recovery codes are lost, open the same Security page and choose **Regenerate recovery
+codes** (`POST /api/auth/mfa/recovery-codes`) with a current authenticator code; the previous
+codes are invalidated immediately.
+
+### Gate QR scanning
+
+`/guard/verify` reads visitor passes with the device camera or from a saved QR image
+(**No camera? Scan a saved QR image**). Browsers only expose `getUserMedia` on secure
+origins, so live camera scanning requires `https://` or `localhost`. On a guard tablet
+reached over the LAN, put the app behind TLS (the production nginx should terminate HTTPS);
+otherwise use the saved-image upload or type the code manually.
+
 ## Docker
 
 Secrets are **required** — compose fails fast and the API refuses to boot with defaults.
 
 ```bash
+export POSTGRES_PASSWORD=$(openssl rand -hex 16)   # also used in DATABASE_URL
 export JWT_ACCESS_SECRET=$(openssl rand -hex 32)
 export JWT_REFRESH_SECRET=$(openssl rand -hex 32)
 export ENCRYPTION_KEY=$(openssl rand -base64 32)
@@ -70,13 +100,13 @@ docker compose up --build
 # api  → http://localhost:4000 (also reachable through nginx)
 ```
 
-SQLite and uploads persist in named volumes; the server entrypoint runs `prisma migrate deploy` on start and seeds demo data when `SEED_DEMO=true`.
+PostgreSQL data and uploads persist in named volumes; the server entrypoint runs `prisma migrate deploy` on start and seeds demo data when `SEED_DEMO=true`. Compose also requires `POSTGRES_PASSWORD` (see `docker-compose.yml`).
 
 ## Tests
 
 ```bash
 cd server
-npm test           # vitest: global setup does a fresh db push + seed on tests/test.db
+npm test           # vitest: global setup resets + seeds the sb_db_test PostgreSQL database
 npm run lint       # tsc --noEmit
 cd ../web
 npm run lint       # tsc -b --force

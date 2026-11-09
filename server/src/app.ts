@@ -13,6 +13,7 @@ import { errorHandlerPlugin } from "./plugins/errorHandler.js";
 import { swaggerPlugin } from "./plugins/swagger.js";
 import { websocketPlugin } from "./plugins/websocket.js";
 import { authRoutes } from "./routes/auth.routes.js";
+import { mfaRoutes } from "./routes/mfa.routes.js";
 import { userRoutes } from "./routes/users.routes.js";
 import { buildingRoutes } from "./routes/buildings.routes.js";
 import { residentRoutes, gateRoutes } from "./routes/residents.routes.js";
@@ -71,6 +72,7 @@ export async function buildApp() {
   });
 
   await app.register(authRoutes);
+  await app.register(mfaRoutes);
   await app.register(userRoutes);
   await app.register(buildingRoutes);
   await app.register(residentRoutes);

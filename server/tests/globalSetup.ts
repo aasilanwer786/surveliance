@@ -1,6 +1,6 @@
 import { execSync } from "node:child_process";
 
-const DATABASE_URL = "file:./test.db";
+const DATABASE_URL = "postgresql://postgres:Admin123@localhost:5432/sb_db_test?schema=public";
 
 export function setup(): void {
   execSync("npx prisma db push --force-reset --skip-generate", {

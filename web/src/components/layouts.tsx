@@ -240,6 +240,9 @@ export function Shell({ children }: { children: ReactNode }) {
             >
               {voiceOn ? "🔊 voice" : "🔇 muted"}
             </button>
+            <NavLink to="/account/security" className="btn ghost sm" title="Two-factor authentication (MFA)">
+              🛡
+            </NavLink>
             <NavLink to="/account/password" className="btn ghost sm" title="Change password">
               🔑
             </NavLink>

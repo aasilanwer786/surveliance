@@ -25,6 +25,7 @@ interface UserRow {
   mustChangePassword?: boolean;
   lastLoginAt?: string | null;
   createdAt: string;
+  deletedAt?: string | null;
   apartments: string[];
   guard?: { employeeCode?: string; gate?: { id: string; name: string } | null } | null;
 }
@@ -84,13 +85,17 @@ export default function UsersPage() {
   const [q, setQ] = useState("");
 
   const { data, error, loading, reload } = useAsync<Page<UserRow>>(
-    () =>
-      get(
-        `/api/users?page=${page}&limit=${LIMIT}` +
-          `${role ? `&role=${role}` : ""}` +
-          `${status ? `&status=${status}` : ""}` +
-          `${q ? `&q=${encodeURIComponent(q)}` : ""}`,
-      ),
+    () => {
+      const params = new URLSearchParams({
+        page: String(page),
+        limit: String(LIMIT),
+      });
+      if (role) params.set("role", role);
+      if (status === "DEACTIVATED") params.set("deleted", "only");
+      else if (status) params.set("status", status);
+      if (q) params.set("q", q);
+      return get(`/api/users?${params.toString()}`);
+    },
     [page, role, status, q],
   );
 
@@ -126,6 +131,9 @@ export default function UsersPage() {
   const [deleteTarget, setDeleteTarget] = useState<UserRow | null>(null);
   const [confirmText, setConfirmText] = useState("");
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const [restoreTarget, setRestoreTarget] = useState<UserRow | null>(null);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
 
   const resetCreate = () => {
     setName("");
@@ -232,7 +240,7 @@ export default function UsersPage() {
     setBusy(true);
     try {
       await del(`/api/users/${deleteTarget.id}`);
-      toast.push(`${deleteTarget.name} deactivated`, "success");
+      toast.push(`${deleteTarget.name} moved to the deactivated list`, "success");
       setDeleteTarget(null);
       setConfirmText("");
       reload();
@@ -246,6 +254,22 @@ export default function UsersPage() {
         setDeleteError(message);
         toast.push(message, "error");
       }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitRestore = async () => {
+    if (!restoreTarget) return;
+    setRestoreError(null);
+    setBusy(true);
+    try {
+      await post(`/api/users/${restoreTarget.id}/reactivate`, {});
+      toast.push(`${restoreTarget.name} restored`, "success");
+      setRestoreTarget(null);
+      reload();
+    } catch (err) {
+      setRestoreError(errText(err));
     } finally {
       setBusy(false);
     }
@@ -318,6 +342,7 @@ export default function UsersPage() {
           <option value="">All statuses</option>
           <option value="ACTIVE">Active</option>
           <option value="DISABLED">Disabled</option>
+          <option value="DEACTIVATED">Deactivated</option>
         </select>
         <button className="btn" type="submit">
           Search
@@ -328,6 +353,12 @@ export default function UsersPage() {
           </button>
         )}
       </form>
+
+      {status === "DEACTIVATED" && (
+        <div className="small dim mb">
+          Showing deactivated accounts. They are retained with their history and can be restored at any time.
+        </div>
+      )}
 
       {loading ? (
         <LoadingRow label="Loading users…" />
@@ -381,9 +412,18 @@ export default function UsersPage() {
                         )}
                       </td>
                       <td>
-                        <Badge tone={statusColor(u.status)}>{u.status}</Badge>
-                        {u.mustChangePassword && (
-                          <div className="small dim">password reset pending</div>
+                        {u.deletedAt ? (
+                          <>
+                            <Badge tone="red">DEACTIVATED</Badge>
+                            <div className="small dim">moved {relative(u.deletedAt)}</div>
+                          </>
+                        ) : (
+                          <>
+                            <Badge tone={statusColor(u.status)}>{u.status}</Badge>
+                            {u.mustChangePassword && (
+                              <div className="small dim">password reset pending</div>
+                            )}
+                          </>
                         )}
                       </td>
                       <td>
@@ -394,27 +434,38 @@ export default function UsersPage() {
                       </td>
                       <td>
                         <div className="row gap-sm" style={{ justifyContent: "flex-end" }}>
-                          {canWrite && (
+                          {canWrite && u.deletedAt && (
                             <button
-                              className="btn sm"
-                              onClick={() => openEdit(u)}
-                            >
-                              Edit
-                            </button>
-                          )}
-                          {canWrite && (
-                            <button
-                              className="btn sm danger"
-                              disabled={isSelf}
-                              title={isSelf ? "You cannot deactivate your own account" : undefined}
+                              className="btn sm primary"
                               onClick={() => {
-                                setDeleteTarget(u);
-                                setConfirmText("");
-                                setDeleteError(null);
+                                setRestoreTarget(u);
+                                setRestoreError(null);
                               }}
                             >
-                              Deactivate
+                              Restore
                             </button>
+                          )}
+                          {canWrite && !u.deletedAt && (
+                            <>
+                              <button
+                                className="btn sm"
+                                onClick={() => openEdit(u)}
+                              >
+                                Edit
+                              </button>
+                              <button
+                                className="btn sm danger"
+                                disabled={isSelf}
+                                title={isSelf ? "You cannot deactivate your own account" : undefined}
+                                onClick={() => {
+                                  setDeleteTarget(u);
+                                  setConfirmText("");
+                                  setDeleteError(null);
+                                }}
+                              >
+                                Deactivate
+                              </button>
+                            </>
                           )}
                         </div>
                       </td>
@@ -652,14 +703,15 @@ export default function UsersPage() {
               disabled={busy || confirmText !== (deleteTarget?.email ?? "")}
               onClick={() => void submitDelete()}
             >
-              {busy ? "Deactivating…" : "Deactivate account"}
+              {busy ? "Deactivating…" : "Move to deactivated list"}
             </button>
           </>
         }
       >
         <p className="muted">
-          This signs <strong>{deleteTarget?.name}</strong> out everywhere and disables the account. Type the
-          email below to confirm.
+          This signs <strong>{deleteTarget?.name}</strong> out everywhere, disables the account and moves it to
+          the <strong>Deactivated</strong> list. Nothing is permanently deleted — you can restore it later. Type
+          the email below to confirm.
         </p>
         <Field label={`Type ${deleteTarget?.email ?? ""} to confirm`}>
           <input
@@ -671,6 +723,28 @@ export default function UsersPage() {
           />
         </Field>
         {deleteError && <div className="error-text mb">{deleteError}</div>}
+      </Modal>
+
+      <Modal
+        open={restoreTarget !== null}
+        title="Restore user"
+        onClose={() => setRestoreTarget(null)}
+        footer={
+          <>
+            <button className="btn ghost" onClick={() => setRestoreTarget(null)} disabled={busy}>
+              Cancel
+            </button>
+            <button className="btn primary" onClick={() => void submitRestore()} disabled={busy}>
+              {busy ? "Restoring…" : "Restore account"}
+            </button>
+          </>
+        }
+      >
+        <p className="muted">
+          Restore <strong>{restoreTarget?.name}</strong> to the active directory? Their account, flat link
+          and history are unchanged; they will be able to sign in again.
+        </p>
+        {restoreError && <div className="error-text mb">{restoreError}</div>}
       </Modal>
     </>
   );

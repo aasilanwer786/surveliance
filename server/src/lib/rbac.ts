@@ -128,6 +128,9 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
 };
 
 export function permissionsForRole(role: string): Permission[] {
+  // The platform owner always holds every permission, regardless of how the
+  // per-role matrix is edited later.
+  if (role === ROLES.SUPER_ADMIN) return [...ALL_PERMISSIONS];
   return ROLE_PERMISSIONS[role as Role] ?? [];
 }
 

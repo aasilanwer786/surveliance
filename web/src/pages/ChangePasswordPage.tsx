@@ -38,8 +38,8 @@ export default function ChangePasswordPage() {
     setBusy(true);
     try {
       await changePassword(current, next);
-      toast.push("Password updated — all other sessions were signed out", "success");
-      navigate("/", { replace: true });
+      toast.push("Password updated — please sign in again", "success");
+      navigate("/login", { replace: true });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not change the password");
     } finally {

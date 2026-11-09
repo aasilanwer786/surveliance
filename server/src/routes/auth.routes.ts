@@ -5,7 +5,8 @@ import { config } from "../config.js";
 import { AppError, badRequest, forbidden, unauthorized } from "../lib/errors.js";
 import { checkPasswordPolicy, hashPassword, verifyPassword } from "../lib/passwords.js";
 import { permissionsForRole, ROLES } from "../lib/rbac.js";
-import { randomToken, sha256 } from "../lib/codes.js";
+import { sha256 } from "../lib/codes.js";
+import { issueTokens } from "../lib/tokens.js";
 import { auditFromRequest, writeAudit } from "../lib/audit.js";
 import type { AuthUser } from "../types.js";
 
@@ -68,6 +69,7 @@ export async function buildProfile(userId: string) {
     role: user.role,
     status: user.status,
     mustChangePassword: user.mustChangePassword,
+    mfaEnabled: user.mfaEnabled,
     permissions: permissionsForRole(user.role),
     guard: user.guardProfile
       ? { employeeCode: user.guardProfile.employeeCode, gate: user.guardProfile.gate }
@@ -84,19 +86,6 @@ export async function buildProfile(userId: string) {
       buildingId: r.apartment.block.building.id,
     })),
   };
-}
-
-async function issueTokens(app: FastifyInstance, userId: string, role: string) {
-  const accessToken = app.jwt.sign({ sub: userId, role }, { expiresIn: config.jwt.accessTtl });
-  const refreshToken = randomToken(48);
-  await prisma.refreshToken.create({
-    data: {
-      tokenHash: sha256(refreshToken),
-      userId,
-      expiresAt: new Date(Date.now() + config.jwt.refreshTtlSeconds * 1000),
-    },
-  });
-  return { accessToken, refreshToken, expiresIn: config.jwt.accessTtlSeconds };
 }
 
 export async function authRoutes(app: FastifyInstance) {
@@ -148,8 +137,21 @@ export async function authRoutes(app: FastifyInstance) {
 
       await prisma.user.update({
         where: { id: user.id },
-        data: { failedLoginCount: 0, lockedUntil: null, lastLoginAt: new Date() },
+        data: { failedLoginCount: 0, lockedUntil: null },
       });
+
+      if (user.mfaEnabled) {
+        const challengeToken = app.jwt.sign({ sub: user.id, purpose: "mfa" }, { expiresIn: "5m" });
+        await writeAudit(
+          user.id,
+          user.role,
+          { action: "LOGIN_MFA_CHALLENGE", entity: "User", entityId: user.id },
+          req,
+        );
+        return reply.send({ mfaRequired: true, challengeToken, expiresIn: 300 });
+      }
+
+      await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
       const tokens = await issueTokens(app, user.id, user.role);
       const profile = await buildProfile(user.id);
       await writeAudit(user.id, user.role, { action: "LOGIN", entity: "User", entityId: user.id }, req);

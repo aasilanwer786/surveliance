@@ -34,9 +34,20 @@ export async function userRoutes(app: FastifyInstance) {
     "/api/users",
     { ...app.requirePermission("users:read"), schema: { tags: ["Admin"], summary: "List users (paginated, filterable)" } },
     async (req, reply) => {
-      const q = paginationQuery.extend({ role: z.string().optional(), status: z.string().optional() }).parse(req.query);
+      const q = paginationQuery
+        .extend({
+          role: z.string().optional(),
+          status: z.string().optional(),
+          // active = current directory, only = deactivated list, all = both
+          deleted: z.enum(["active", "only", "all"]).default("active"),
+        })
+        .parse(req.query);
       const where = {
-        deletedAt: null,
+        ...(q.deleted === "only"
+          ? { deletedAt: { not: null } }
+          : q.deleted === "all"
+            ? {}
+            : { deletedAt: null }),
         ...(q.role ? { role: q.role } : {}),
         ...(q.status ? { status: q.status } : {}),
         ...(q.q ? { OR: [{ name: { contains: q.q } }, { email: { contains: q.q } }, { phone: { contains: q.q } }] } : {}),
@@ -47,7 +58,7 @@ export async function userRoutes(app: FastifyInstance) {
           where,
           select: {
             id: true, email: true, name: true, phone: true, role: true, status: true,
-            mustChangePassword: true, lastLoginAt: true, createdAt: true,
+            mustChangePassword: true, lastLoginAt: true, createdAt: true, deletedAt: true,
             residents: { select: { apartment: { select: { flatNumber: true } } } },
             guardProfile: { select: { employeeCode: true, gate: { select: { name: true } } } },
           },
@@ -168,9 +179,40 @@ export async function userRoutes(app: FastifyInstance) {
     },
   );
 
+  app.post(
+    "/api/users/:id/reactivate",
+    { ...app.requirePermission("users:write"), schema: { tags: ["Admin"], summary: "Restore a deactivated user from the deactivated list" } },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const user = await prisma.user.findFirst({ where: { id, deletedAt: { not: null } } });
+      if (!user) throw notFound("Deactivated user not found");
+      if (user.role === ROLES.SUPER_ADMIN && req.auth!.user.role !== ROLES.SUPER_ADMIN) {
+        throw badRequest("Only a super administrator can restore super administrator accounts", "PRIVILEGE_ESCALATION");
+      }
+      const updated = await prisma.user.update({
+        where: { id },
+        data: {
+          status: "ACTIVE",
+          deletedAt: null,
+          failedLoginCount: 0,
+          lockedUntil: null,
+          updatedBy: req.auth!.user.id,
+        },
+      });
+      await auditFromRequest(req)({ action: "USER_REACTIVATED", entity: "User", entityId: id });
+      return reply.send({
+        id: updated.id,
+        email: updated.email,
+        role: updated.role,
+        status: updated.status,
+        deletedAt: updated.deletedAt,
+      });
+    },
+  );
+
   app.delete(
     "/api/users/:id",
-    { ...app.requirePermission("users:write"), schema: { tags: ["Admin"], summary: "Deactivate (soft-delete) a user" } },
+    { ...app.requirePermission("users:write"), schema: { tags: ["Admin"], summary: "Deactivate (soft-delete) a user and keep it in the deactivated list" } },
     async (req, reply) => {
       const { id } = req.params as { id: string };
       const user = await prisma.user.findFirst({ where: { id, deletedAt: null } });

@@ -1,9 +1,23 @@
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: SB_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d SB_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   server:
     build: ./server
     environment:
       NODE_ENV: production
-      DATABASE_URL: file:/data/dev.db
+      DATABASE_URL: "postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/SB_db?schema=public"
       PORT: 4000
       HOST: 0.0.0.0
       CORS_ORIGIN: http://localhost:8080
@@ -14,6 +28,9 @@ services:
       RATE_LIMIT_MAX: 300
       UPLOAD_DIR: /data/uploads
       SEED_DEMO: ${SEED_DEMO:-false}
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "4000:4000"
     volumes:
@@ -34,3 +51,4 @@ services:
 
 volumes:
   server-data:
+  db-data:

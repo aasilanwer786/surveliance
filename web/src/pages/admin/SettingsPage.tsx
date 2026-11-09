@@ -28,27 +28,38 @@ function ToggleRow({
   hint,
   checked,
   onChange,
+  disabled,
 }: {
   label: string;
   hint?: string;
   checked: boolean;
   onChange: (value: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
-    <label className="row between wrap" style={{ padding: "6px 0", cursor: "pointer" }}>
+    <label
+      className="row between wrap"
+      style={{ padding: "6px 0", cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.65 : 1 }}
+    >
       <span>
         <span style={{ fontWeight: 600 }}>{label}</span>
         {hint && <div className="small dim">{hint}</div>}
       </span>
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+      />
     </label>
   );
 }
 
 export default function SettingsPage() {
-  const { has } = useAuth();
+  const { has, user } = useAuth();
   const toast = useToast();
-  const canWrite = has("settings:write");
+  // The super admin always gets write access (the server enforces the same rule).
+  const canWrite = user?.role === "SUPER_ADMIN" || has("settings:write");
 
   const { data, error, loading, reload } = useAsync<SettingsMap>(() => get("/api/settings"), []);
   const [draft, setDraft] = useState<SettingsMap | null>(null);
@@ -127,6 +138,13 @@ export default function SettingsPage() {
         }
       />
 
+      {!canWrite && (
+        <div className="banner" style={{ marginBottom: 14, borderColor: "var(--border-soft)", background: "var(--panel-2)", color: "var(--text-2)" }}>
+          <span>🔒</span>
+          <span className="grow">Read-only — your role can view system settings but not change them.</span>
+        </div>
+      )}
+
       <form id="settings-form" onSubmit={save}>
         <div className="grid cols-2">
           <Card title="General">
@@ -194,12 +212,14 @@ export default function SettingsPage() {
               hint="Residents and security can extend an expected arrival."
               checked={draft.allowInvitationExtension === "true"}
               onChange={(v) => setValue("allowInvitationExtension", String(v))}
+              disabled={!canWrite}
             />
             <ToggleRow
               label="Require vehicle number"
               hint="Vehicle registration becomes mandatory when creating an invitation."
               checked={draft.requireVehicleNumber === "true"}
               onChange={(v) => setValue("requireVehicleNumber", String(v))}
+              disabled={!canWrite}
             />
           </Card>
 
@@ -209,6 +229,7 @@ export default function SettingsPage() {
               hint="Raise an alert when a visitor stays past the expected window."
               checked={draft.overstayEnabled === "true"}
               onChange={(v) => setValue("overstayEnabled", String(v))}
+              disabled={!canWrite}
             />
             <div className="grid cols-2">
               <Field label="Grace period (min)">
@@ -237,6 +258,7 @@ export default function SettingsPage() {
               hint="Old visitor records are anonymised instead of kept in full."
               checked={draft.retentionAnonymizationEnabled === "true"}
               onChange={(v) => setValue("retentionAnonymizationEnabled", String(v))}
+              disabled={!canWrite}
             />
           </Card>
 
@@ -246,6 +268,7 @@ export default function SettingsPage() {
               hint="Play spoken warnings on staff devices for critical events."
               checked={draft.voiceAlertsEnabled === "true"}
               onChange={(v) => setValue("voiceAlertsEnabled", String(v))}
+              disabled={!canWrite}
             />
             <Field label="Notification channels" hint="Comma-separated: IN_APP, PUSH, EMAIL, SMS, WHATSAPP">
               <input

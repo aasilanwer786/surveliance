@@ -8,6 +8,7 @@ import LoginPage from "./pages/LoginPage";
 import PublicInvitePage from "./pages/PublicInvitePage";
 import NotificationsPage from "./pages/NotificationsPage";
 import ChangePasswordPage from "./pages/ChangePasswordPage";
+import SecurityPage from "./pages/SecurityPage";
 
 import ResidentDashboardPage from "./pages/resident/DashboardPage";
 import NewInvitationPage from "./pages/resident/NewInvitationPage";
@@ -107,6 +108,7 @@ export default function App() {
 
         <Route path="/notifications" element={<RequireAuth><NotificationsPage /></RequireAuth>} />
         <Route path="/account/password" element={<RequireAuth><ChangePasswordPage /></RequireAuth>} />
+        <Route path="/account/security" element={<RequireAuth><SecurityPage /></RequireAuth>} />
 
         <Route path="/resident" element={<RequireAuth perm="invitations:create"><ResidentDashboardPage /></RequireAuth>} />
         <Route path="/resident/new" element={<RequireAuth perm="invitations:create"><NewInvitationPage /></RequireAuth>} />

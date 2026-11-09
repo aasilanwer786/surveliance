@@ -53,6 +53,31 @@ function enqueueScanner(task: () => Promise<void>): void {
   scannerChain = scannerChain.then(task, task).catch(() => undefined);
 }
 
+function describeCameraError(err: unknown): string {
+  const name =
+    typeof err === "object" && err !== null && "name" in err
+      ? String((err as { name?: unknown }).name ?? "")
+      : "";
+  const message = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  switch (name) {
+    case "NotAllowedError":
+    case "SecurityError":
+    case "PermissionDeniedError":
+      return "Camera permission was blocked. Allow camera access in the browser, or scan a saved QR image.";
+    case "NotFoundError":
+    case "DevicesNotFoundError":
+    case "OverconstrainedError":
+      return "No usable camera was found. Scan a saved QR image, or type the code.";
+    case "NotReadableError":
+    case "TrackStartError":
+      return "The camera is busy in another app. Close it and retry, or scan a saved QR image.";
+    default:
+      return message
+        ? `Camera unavailable: ${message}. Scan a saved QR image, or type the code.`
+        : "Camera unavailable. Scan a saved QR image, or type the code.";
+  }
+}
+
 function ScannerModal({
   open,
   onClose,
@@ -65,14 +90,22 @@ function ScannerModal({
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const readerId = useRef(`qr-reader-${Math.random().toString(36).slice(2)}`);
   const firedRef = useRef(false);
+  const onScanRef = useRef(onScan);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [statusText, setStatusText] = useState("Starting camera…");
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    onScanRef.current = onScan;
+  }, [onScan]);
 
   useEffect(() => {
     if (!open) return;
     let disposed = false;
     const scannerId = readerId.current;
     setStarting(true);
+    setStatusText("Starting camera…");
     setError(null);
     firedRef.current = false;
     const mount = document.getElementById(scannerId);
@@ -82,16 +115,32 @@ function ScannerModal({
 
     enqueueScanner(async () => {
       if (disposed) return;
+      if (!window.isSecureContext) {
+        setStarting(false);
+        setError("Camera access needs HTTPS or localhost. Scan a saved QR image, or type the code.");
+        return;
+      }
       instance = new Html5Qrcode(scannerId, { verbose: false });
       scannerRef.current = instance;
       try {
+        // Prefer the rear/environment camera, but fall back to whatever camera exists
+        // (many laptops and desktops only expose a front-facing webcam).
+        let camera: string | MediaTrackConstraints = { facingMode: "environment" };
+        try {
+          const cameras = await Html5Qrcode.getCameras();
+          const rear = cameras.find((c) => /back|rear|environment/i.test(c.label));
+          if (rear) camera = rear.id;
+          else if (cameras.length > 0) camera = cameras[0].id;
+        } catch {
+          // Keep the facingMode fallback; start() surfaces the real error below.
+        }
         await instance.start(
-          { facingMode: "environment" },
+          camera,
           { fps: 10, qrbox: { width: 220, height: 220 }, aspectRatio: 1 },
           (text) => {
             if (disposed || firedRef.current) return;
             firedRef.current = true;
-            onScan(text);
+            onScanRef.current(text);
           },
           () => {
             // per-frame decode misses are expected
@@ -108,11 +157,7 @@ function ScannerModal({
       } catch (err) {
         if (!disposed) {
           setStarting(false);
-          setError(
-            err instanceof Error
-              ? `Camera unavailable: ${err.message}. Type the code instead.`
-              : "Camera unavailable. Type the code instead.",
-          );
+          setError(describeCameraError(err));
         }
         try { instance?.clear(); } catch { /* ignore */ }
         scannerRef.current = null;
@@ -130,7 +175,44 @@ function ScannerModal({
         });
       }
     };
-  }, [open, onScan]);
+  }, [open, attempt]);
+
+  const scanImageFile = async (file: File) => {
+    if (!file.type.startsWith("image/")) {
+      setError("Choose an image file (PNG, JPG or WebP) that contains the QR code.");
+      return;
+    }
+    setError(null);
+    setStarting(true);
+    setStatusText("Reading QR image…");
+    const holder = document.createElement("div");
+    holder.id = `qr-file-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    holder.style.position = "fixed";
+    holder.style.left = "-10000px";
+    holder.style.top = "0";
+    document.body.appendChild(holder);
+    try {
+      const tmp = new Html5Qrcode(holder.id, { verbose: false });
+      try {
+        const text = await tmp.scanFile(file, false);
+        if (!text) throw new Error("No QR code was found in that image.");
+        if (firedRef.current) return;
+        firedRef.current = true;
+        onScanRef.current(text);
+      } finally {
+        try { tmp.clear(); } catch { /* ignore */ }
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error && err.message
+          ? err.message
+          : "Could not read a QR code from that image.",
+      );
+    } finally {
+      holder.remove();
+      setStarting(false);
+    }
+  };
 
   if (!open) return null;
   return (
@@ -146,11 +228,31 @@ function ScannerModal({
         {starting && (
           <div className="loading-row">
             <div className="spinner" />
-            Starting camera…
+            {statusText}
           </div>
         )}
         {error && <div className="error-text mt">{error}</div>}
+        {error && (
+          <button className="btn ghost sm mt" disabled={starting} onClick={() => setAttempt((n) => n + 1)}>
+            Retry camera
+          </button>
+        )}
         <div className="hint mt">Point the camera at the visitor's QR pass. The code is read automatically.</div>
+        <label className="label mt" htmlFor={`${readerId.current}-file`}>
+          No camera? Scan a saved QR image
+        </label>
+        <input
+          id={`${readerId.current}-file`}
+          type="file"
+          accept="image/*"
+          className="input"
+          style={{ padding: 10 }}
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (file) void scanImageFile(file);
+          }}
+        />
       </div>
     </div>
   );
@@ -166,8 +268,24 @@ export default function VerifyPage() {
   const [result, setResult] = useState<VerifyResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [lastSource, setLastSource] = useState<"QR" | "CODE">("CODE");
   const [history, setHistory] = useState<Array<{ at: string; code: string; ok: boolean; label: string }>>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+  const resultRef = useRef<HTMLDivElement>(null);
+
+  // The result card sits below the form; on short/mobile viewports the actions
+  // ("Record entry" / "Verify next") are off-screen, so bring the card and its
+  // action row into view. Use instant scrolling so it also works when the
+  // browser has smooth scrolling disabled.
+  useEffect(() => {
+    if (!result) return;
+    const card = resultRef.current;
+    card?.scrollIntoView({ behavior: "auto", block: "start" });
+    card?.querySelector<HTMLElement>("[data-verify-actions]")?.scrollIntoView({
+      behavior: "auto",
+      block: "nearest",
+    });
+  }, [result]);
 
   const gates = useAsync<{ items: Gate[] }>(() => get("/api/gates"), []);
 
@@ -183,7 +301,7 @@ export default function VerifyPage() {
     return subscribe((msg) => {
       if (msg.type === "approval-pending" && result?.verified) {
         // refresh pending state live while the visitor waits
-        void verify(result.invitation.code, true);
+        void verify(result.invitation.code, { silent: true });
       }
       if (msg.type === "lockdown") {
         toast.push(msg.data?.active ? "LOCKDOWN activated — entry suspended" : "Lockdown released", msg.data?.active ? "error" : "success");
@@ -193,16 +311,20 @@ export default function VerifyPage() {
   }, [subscribe, result]);
 
   const verify = useCallback(
-    async (rawCode: string, silent = false) => {
+    async (rawCode: string, opts?: { silent?: boolean; source?: "QR" | "CODE" }) => {
+      const silent = opts?.silent ?? false;
+      const source = opts?.source ?? "CODE";
       const cleaned = rawCode.trim();
       if (!cleaned) return;
       setBusy(true);
       try {
-        const res = await post<VerifyResult>("/api/visitors/verify-code", {
+        const endpoint = source === "QR" ? "/api/visitors/verify-qr" : "/api/visitors/verify-code";
+        const res = await post<VerifyResult>(endpoint, {
           code: cleaned,
           ...(gateId ? { gateId } : {}),
         });
         setResult(res);
+        setLastSource(source);
         setCode("");
         setHistory((h) =>
           [
@@ -233,7 +355,7 @@ export default function VerifyPage() {
   const onScan = useCallback(
     (text: string) => {
       setScanning(false);
-      void verify(text);
+      void verify(text, { source: "QR" });
     },
     [verify],
   );
@@ -242,7 +364,7 @@ export default function VerifyPage() {
     if (!result?.verified) return;
     setBusy(true);
     try {
-      await post(`/api/visitors/${result.invitation.id}/entry`, { gateId, source: "QR" });
+      await post(`/api/visitors/${result.invitation.id}/entry`, { gateId, source: lastSource });
       toast.push(`Entry recorded — ${result.invitation.visitorName} is inside`, "success");
       setResult({ ...result, invitation: { ...result.invitation, visitStatus: "INSIDE" }, entryAllowed: false });
     } catch (err) {
@@ -310,7 +432,11 @@ export default function VerifyPage() {
             </div>
           </div>
 
-          {result && <VerifyResultCard result={result} busy={busy} onEntry={() => void recordEntry()} onReset={() => setResult(null)} />}
+          {result && (
+            <div ref={resultRef} style={{ scrollMarginTop: 90 }}>
+              <VerifyResultCard result={result} busy={busy} onEntry={() => void recordEntry()} onReset={() => setResult(null)} />
+            </div>
+          )}
         </div>
 
         <div className="col">
@@ -380,7 +506,7 @@ function VerifyResultCard({
           Reason code: <span className="mono">{result.reason}</span>
           {result.alertId ? " · security alert raised" : ""}
         </div>
-        <div className="row" style={{ justifyContent: "center", marginTop: 14 }}>
+        <div className="row" data-verify-actions style={{ justifyContent: "center", marginTop: 14 }}>
           <button className="btn lg" onClick={onReset}>
             Verify next visitor
           </button>
@@ -452,7 +578,7 @@ function VerifyResultCard({
         </div>
       </div>
 
-      <div className="row" style={{ justifyContent: "center", gap: 10, marginTop: 14 }}>
+      <div className="row" data-verify-actions style={{ justifyContent: "center", gap: 10, marginTop: 14 }}>
         {result.entryAllowed && !inside && (
           <button className="btn primary lg" disabled={busy} onClick={onEntry}>
             ⭘ Record entry

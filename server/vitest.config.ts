@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     globalSetup: ["tests/globalSetup.ts"],
     env: {
-      DATABASE_URL: "file:./test.db",
+      DATABASE_URL: "postgresql://postgres:Admin123@localhost:5432/sb_db_test?schema=public",
       JWT_ACCESS_SECRET: "test-access-secret-test-access-secret-1234",
       JWT_REFRESH_SECRET: "test-refresh-secret-test-refresh-secret-12",
       NODE_ENV: "test",

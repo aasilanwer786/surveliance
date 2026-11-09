@@ -28,10 +28,19 @@ export async function residentRoutes(app: FastifyInstance) {
     { ...app.requirePermission("residents:read"), schema: { tags: ["Residents"], summary: "List residents with apartment details" } },
     async (req, reply) => {
       const q = paginationQuery
-        .extend({ apartmentId: z.string().optional(), status: z.string().optional() })
+        .extend({
+          apartmentId: z.string().optional(),
+          status: z.string().optional(),
+          // active = current links, only = deactivated list, all = both
+          deleted: z.enum(["active", "only", "all"]).default("active"),
+        })
         .parse(req.query);
       const where = {
-        deletedAt: null,
+        ...(q.deleted === "only"
+          ? { deletedAt: { not: null } }
+          : q.deleted === "all"
+            ? {}
+            : { deletedAt: null }),
         ...(q.apartmentId ? { apartmentId: q.apartmentId } : {}),
         ...(q.status ? { status: q.status } : {}),
         ...(q.q
@@ -166,9 +175,25 @@ export async function residentRoutes(app: FastifyInstance) {
     },
   );
 
+  app.post(
+    "/api/residents/:id/reactivate",
+    { ...app.requirePermission("residents:write"), schema: { tags: ["Residents"], summary: "Restore a deactivated resident link" } },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const existing = await prisma.resident.findFirst({ where: { id, deletedAt: { not: null } } });
+      if (!existing) throw notFound("Deactivated resident not found");
+      const updated = await prisma.resident.update({
+        where: { id },
+        data: { status: "ACTIVE", deletedAt: null, updatedBy: req.auth!.user.id },
+      });
+      await auditFromRequest(req)({ action: "RESIDENT_REACTIVATED", entity: "Resident", entityId: id });
+      return reply.send(updated);
+    },
+  );
+
   app.delete(
     "/api/residents/:id",
-    { ...app.requirePermission("residents:write"), schema: { tags: ["Residents"], summary: "Deactivate a resident link" } },
+    { ...app.requirePermission("residents:write"), schema: { tags: ["Residents"], summary: "Deactivate a resident link (kept in the deactivated list)" } },
     async (req, reply) => {
       const { id } = req.params as { id: string };
       const existing = await prisma.resident.findFirst({ where: { id, deletedAt: null } });

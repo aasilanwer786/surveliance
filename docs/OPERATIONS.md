@@ -26,7 +26,7 @@ SecureResident apartment security & visitor management platform.
 | --- | --- | --- | --- | --- |
 | API | Fastify 5 + TS (ESM) | 4000 | 4000 | REST under `/api`, OpenAPI UI at `/docs`, WS at `/ws`, uploads at `/uploads` |
 | Web | React 19 + Vite 7 | 5173 | 80 (container) / 8080 (host) | nginx serves the SPA and proxies `/api`, `/uploads`, `/docs`, `/ws` |
-| Database | SQLite via Prisma 6 | `prisma/dev.db` | `/data/dev.db` (volume) | Single-writer; back up as a file |
+| Database | PostgreSQL via Prisma 6 | `localhost:5432/SB_db` | `db` service (`db-data` volume) | Back up with `pg_dump` |
 | Uploads | Local disk | `server/uploads/` | `/data/uploads` (volume) | Visitor photos; encrypted camera creds live in the DB |
 
 **In-process background jobs** (`server/src/jobs/sweeps.ts`, started at boot):
@@ -48,7 +48,7 @@ guard verify → approval (per policy) → entry → inside tracking → exit. V
 
 | Var | Default | Purpose |
 | --- | --- | --- |
-| `DATABASE_URL` | `file:./dev.db` | SQLite path; relative to `prisma/`, or absolute (`file:/data/dev.db`) |
+| `DATABASE_URL` | `postgresql://postgres:Admin123@localhost:5432/SB_db?schema=public` | PostgreSQL connection string |
 | `NODE_ENV` | `development` | `production` enables the insecure-secret boot guard |
 | `PORT` | `4000` | API listen port |
 | `HOST` | `0.0.0.0` | API bind address |
@@ -123,6 +123,9 @@ those endpoints; the corresponding UI controls are hidden. Only `ADMIN`/`SUPER_A
 lockdown/watchlist/audit. If a tenant needs SECURITY to manage these, change `rbac.ts` **and**
 the tests together.
 
+Two-factor authentication is **per account, not per role** — every role can enrol it from the
+🛡 shield in the top bar (`/account/security`). No RBAC permission is required.
+
 ---
 
 ## 4. Deployment
@@ -191,7 +194,7 @@ your reverse proxy. Point `CORS_ORIGIN`/`WEB_ORIGIN` at the public web origin.
 - [ ] `SEED_DEMO` unset/`false`; delete or rotate every `Secure@Demo123!` account.
 - [ ] Put the API and web behind TLS (HTTPS/WSS).
 - [ ] Restrict network access to the API (only nginx / reverse proxy trusted).
-- [ ] Schedule off-host backups of `/data` (SQLite + uploads).
+- [ ] Schedule off-host backups of the PostgreSQL database (`pg_dump`) and uploads.
 - [ ] Set `CORS_ORIGIN`/`WEB_ORIGIN` to the real origin.
 - [ ] Set `integrationApiKey` if using AI/CCTV detector ingest.
 - [ ] Review `approvalPolicy`, `overstayGraceMinutes`, and retention settings for the site.
@@ -215,23 +218,22 @@ Fastify 5xx. The API logs to stdout/stderr — collect with your platform's log 
 
 ### 5.2 Backup & restore
 
-State = **SQLite DB** + **uploads directory**. In Docker both live in the `server-data` volume.
+State = **PostgreSQL database** (`SB_db`) + **uploads directory**. In Docker the database lives in
+the `db-data` volume and uploads in `server-data`.
 
 ```bash
-# Backup (Docker): stop writes briefly for a consistent copy, then archive the volume
-docker compose stop server
-docker run --rm -v surveillance_server-data:/data -v "$PWD:/backup" alpine \
-  tar czf /backup/secureresident-$(date +%F).tgz -C /data .
-docker compose start server
+# Backup (Docker): logical dump of the database, then archive uploads
+docker compose exec -T db pg_dump -U postgres -d SB_db -Fc > secureresident-$(date +%F).dump
+docker run --rm -v building_server-data:/data -v "$PWD:/backup" alpine \
+  tar czf /backup/uploads-$(date +%F).tgz -C /data/uploads .
 
-# Backup (bare metal): copy prisma/dev.db (or the absolute DATABASE_URL file) + uploads/
+# Backup (bare metal): pg_dump + copy uploads/
+pg_dump -U postgres -d SB_db -Fc -f secureresident-$(date +%F).dump
 ```
 
-Restore: stop the API, replace the DB file and uploads with the backup, start the API. Run
-`prisma migrate deploy` if the backup predates a schema migration.
-
-> SQLite is single-writer. Always stop the API (or use SQLite's `.backup`) before copying the
-> DB file to avoid a torn snapshot.
+Restore: stop the API, recreate the database (`dropdb`/`createdb`), restore with
+`pg_restore -U postgres -d SB_db secureresident-<date>.dump`, restore uploads, then start the API.
+Run `prisma migrate deploy` if the backup predates a schema migration.
 
 ### 5.3 Migrations & upgrades
 
@@ -242,7 +244,7 @@ Restore: stop the API, replace the DB file and uploads with the backup, start th
 4. Roll back by restoring the DB backup and redeploying the previous image/build.
 
 Development schema changes: `npx prisma migrate dev` (creates a migration). Tests use a
-separate `tests/test.db` provisioned by the vitest global setup.
+separate `sb_db_test` PostgreSQL database provisioned by the vitest global setup.
 
 ### 5.4 Secret rotation
 
@@ -342,11 +344,35 @@ Never run the seed against a production database unless you intend to overwrite 
 
 ### 6.9 Database errors
 
-- **"database is locked"** — too many concurrent writers or a stray `sqlite3` session; SQLite
-  allows one writer. Reduce concurrency, ensure a single API instance, and avoid copying the DB
-  while running.
+- **"too many connections"** — lower the Prisma connection pool or raise PostgreSQL
+  `max_connections`; confirm only the expected API instances are running.
 - **Missing tables** — run `prisma migrate deploy` (the Docker entrypoint does this).
-- **Corruption** — restore the latest backup; investigate disk health.
+- **Connection refused / password authentication failed** — verify PostgreSQL is running, the
+  `SB_db` database exists, and `DATABASE_URL` matches the server's `pg_hba.conf`.
+- **Corruption** — restore the latest `pg_dump` backup; investigate disk health.
+
+### 6.10 Two-factor authentication (MFA)
+
+- **Enrol:** sign in → 🛡 shield (top bar) → **Set up two-factor authentication** →
+  scan the QR in Google/Microsoft Authenticator, 1Password, Authy, etc. → enter the 6-digit
+  code. The server returns **8 one-time recovery codes; they are shown only once**.
+- **Sign-in with MFA:** the password step returns `{ mfaRequired: true, challengeToken }`
+  (5-minute challenge) instead of JWTs. `POST /api/auth/mfa/verify { challengeToken, code }`
+  accepts a TOTP or a recovery code and returns the token pair. Recovery codes are consumed
+  on first use.
+- **Lost phone:** sign in with any unused recovery code, then disable and re-enrol MFA. If no
+  recovery codes remain, an administrator must clear `mfaEnabled`, `mfaSecret`, and
+  `mfaRecoveryCodes` for that user directly in the database (`UPDATE "User" ...`).
+- **Lost recovery codes (still have the authenticator):** 🛡 shield → **Regenerate recovery
+  codes** → enter a current 6-digit code. The old codes are invalidated and eight new ones are
+  shown once (`POST /api/auth/mfa/recovery-codes`).
+- **Disable:** 🛡 shield → **Disable two-factor authentication**; requires the password plus a
+  current TOTP or recovery code. Removing MFA revokes all refresh tokens.
+- **Lockout:** wrong codes increment the same counter as bad passwords — 5 failures lock the
+  account for 15 minutes (`429 ACCOUNT_LOCKED`); verification is rate-limited to 10/min/IP.
+- **Secrets at rest:** the TOTP secret is stored in `User.mfaSecret`; recovery codes are
+  stored as SHA-256 hashes in `User.mfaRecoveryCodes`. Challenge tokens are signed with the
+  access secret but carry `purpose: "mfa"` and are rejected by all authenticated endpoints.
 
 ---
 
@@ -361,7 +387,11 @@ Responses use `{ "error": { "code", "message", "details?" } }`. Common codes:
 | `VALIDATION_ERROR` | 400 | Request failed zod validation (includes weak/short fields) |
 | `WEAK_PASSWORD` | 400 | Password policy: ≥10 chars + upper + lower + digit + symbol, not common |
 | `UNAUTHORIZED` | 401 | Missing/invalid token |
-| `INVALID_CREDENTIALS` | 401 | Wrong email/password |
+| `INVALID_CREDENTIALS` | 401 | Wrong email/password (or wrong password when disabling MFA) |
+| `INVALID_MFA_CODE` | 400/401 | Wrong TOTP/recovery code (enable → 400, verify/disable → 401) |
+| `MFA_CHALLENGE_EXPIRED` | 401 | Login challenge older than 5 minutes — sign in again |
+| `MFA_ALREADY_ENABLED` | 409 | Setup/enable called while MFA is already on |
+| `MFA_NOT_ENABLED` | 400 | Disable called while MFA is off |
 | `MISSING_PERMISSION` | 403 | Role lacks the required permission |
 | `FOREIGN_INVITATION` | 403 | Acting on an invitation that isn't yours |
 | `NOT_HOST_RESIDENT` | 403 | Approval by a non-host resident |
@@ -416,7 +446,7 @@ CSV responses carry `Content-Disposition: attachment`. Every generation writes a
 
 | Area | Endpoints |
 | --- | --- |
-| Auth | `POST /api/auth/login`, `/refresh`, `/logout`, `/change-password`; `GET /api/auth/me` |
+| Auth | `POST /api/auth/login`, `/refresh`, `/logout`, `/change-password`; `GET /api/auth/me`; MFA: `POST /api/auth/mfa/setup`, `/mfa/enable`, `/mfa/verify`, `/mfa/disable`, `/mfa/recovery-codes`, `GET /api/auth/mfa/status` |
 | Invitations | `/api/invitations` (CRUD, extend, approve/reject) |
 | Visitors | `/api/visitors` (verify, entry, exit, currently-inside, search, `/:id`) |
 | Security | `/api/security/alerts`, `/incidents`, `/watchlist`, `/lockdown`, `/lockdown/release`, `/status`, `/emergency/events`, `/detector-events` |
@@ -453,7 +483,7 @@ See `/docs` for the live, complete schema.
 **Periodic (daily/weekly):**
 - Review unresolved alerts and open incidents.
 - Verify the latest backup exists and is restorable.
-- Check disk space on the data volume (SQLite + uploads).
+- Check disk space on the data volumes (PostgreSQL + uploads).
 - Confirm the overstay/retention jobs are running (log heartbeat / alert volume).
 
 **Escalation:** site security supervisor → admin → platform on-call. Use the audit log
